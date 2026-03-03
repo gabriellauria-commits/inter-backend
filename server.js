@@ -1,7 +1,6 @@
 const express = require("express");
 const axios = require("axios");
 const https = require("https");
-const fs = require("fs");
 const crypto = require("crypto");
 const db = require("./database");
 
@@ -11,7 +10,6 @@ const cert = process.env.INTER_CERT;
 const key = process.env.INTER_KEY;
 
 const agent = new https.Agent({
- const agent = new https.Agent({
   cert: cert,
   key: key
 });
