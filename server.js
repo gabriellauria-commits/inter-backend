@@ -7,13 +7,13 @@ const db = require("./database");
 
 const app = express();
 
-const cert = fs.readFileSync("./certificado.crt");
-const key = fs.readFileSync("./chave.key");
+const cert = process.env.INTER_CERT;
+const key = process.env.INTER_KEY;
 
 const agent = new https.Agent({
-  cert,
-  key,
-  rejectUnauthorized: true
+ const agent = new https.Agent({
+  cert: cert,
+  key: key
 });
 
 async function gerarToken() {
@@ -151,6 +151,8 @@ app.get("/transacoes", (req, res) => {
 
 /* ================= SERVIDOR ================= */
 
-app.listen(3000, () => {
-  console.log("Servidor rodando em http://localhost:3000");
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
 });
