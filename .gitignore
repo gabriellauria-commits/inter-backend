@@ -1,0 +1,5 @@
+node_modules
+finance.db
+certificado.crt
+chave.key
+.env
