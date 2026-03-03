@@ -6,12 +6,12 @@ const db = require("./database");
 
 const app = express();
 
-const cert = process.env.INTER_CERT;
-const key = process.env.INTER_KEY;
+const cert = Buffer.from(process.env.INTER_CERT, "base64");
+const key = Buffer.from(process.env.INTER_KEY, "base64");
 
 const agent = new https.Agent({
-  cert: cert,
-  key: key
+  cert,
+  key
 });
 
 async function gerarToken() {
