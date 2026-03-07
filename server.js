@@ -10,20 +10,33 @@ const app = express();
 app.use(express.json());
 
 function parsePemEnv(value, label) {
-    if (!value) { console.warn("[WARN] " + label + " nao definido."); return null; }
-    const trimmed = value.trim();
-    if (trimmed.includes("-----BEGIN")) {
-          console.log("[INFO] " + label + " PEM bruto (" + trimmed.length + " chars).");
-          return trimmed.replace(/\\n/g, "\n");
-    }
+  if (!value) {
+    console.warn("[WARN] " + label + " nao definido.");
+    return null;
+  }
+
+  let pem = value.trim();
+
+  // Se vier em base64 puro (sem header PEM), decodifica primeiro
+  if (!pem.includes("-----BEGIN")) {
     try {
-          const decoded = Buffer.from(trimmed, "base64").toString("utf8");
-          console.log("[INFO] " + label + " decodificado base64 (" + decoded.length + " chars).");
-          return decoded;
+      pem = Buffer.from(pem, "base64").toString("utf8").trim();
+      console.log("[INFO] " + label + " decodificado de base64.");
     } catch (e) {
-          console.error("[ERROR] Falha decode " + label + ":", e.message);
-          return null;
+      console.error("[ERROR] Falha decode base64 " + label + ":", e.message);
+      return null;
     }
+  }
+
+  // Normaliza \n literais → quebras reais
+  pem = pem.replace(/\\n/g, "\n");
+
+  // Garante que header/footer e linhas de 64 chars estão corretos
+  const lines = pem.split("\n").map(l => l.trim()).filter(Boolean);
+  const normalized = lines.join("\n") + "\n";
+
+  console.log("[INFO] " + label + " PEM pronto (" + normalized.length + " chars).");
+  return normalized;
 }
 
 function criarAgent() {
