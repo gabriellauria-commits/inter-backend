@@ -1,3 +1,5 @@
+"use strict";
+
 const express = require("express");
 const axios = require("axios");
 const https = require("https");
@@ -7,238 +9,142 @@ const db = require("./database");
 const app = express();
 app.use(express.json());
 
-function parsePemEnv(value) {
-  if (!value) return null;
-
-  const trimmed = value.trim();
-
-  if (
-    trimmed.includes("-----BEGIN CERTIFICATE-----") ||
-    trimmed.includes("-----BEGIN PRIVATE KEY-----") ||
-    trimmed.includes("-----BEGIN RSA PRIVATE KEY-----")
-  ) {
-    return trimmed;
-  }
-
-  return Buffer.from(trimmed, "base64").toString("utf8");
+function parsePemEnv(value, label) {
+    if (!value) { console.warn("[WARN] " + label + " nao definido."); return null; }
+    const trimmed = value.trim();
+    if (trimmed.includes("-----BEGIN")) {
+          console.log("[INFO] " + label + " PEM bruto (" + trimmed.length + " chars).");
+          return trimmed.replace(/\\n/g, "\n");
+    }
+    try {
+          const decoded = Buffer.from(trimmed, "base64").toString("utf8");
+          console.log("[INFO] " + label + " decodificado base64 (" + decoded.length + " chars).");
+          return decoded;
+    } catch (e) {
+          console.error("[ERROR] Falha decode " + label + ":", e.message);
+          return null;
+    }
 }
 
-const cert = parsePemEnv(process.env.INTER_CERT);
-const key = parsePemEnv(process.env.INTER_KEY);
-
-console.log("INTER_CLIENT_ID exists?", !!process.env.INTER_CLIENT_ID);
-console.log("INTER_CLIENT_SECRET exists?", !!process.env.INTER_CLIENT_SECRET);
-console.log("INTER_CERT exists?", !!process.env.INTER_CERT, "length:", process.env.INTER_CERT?.length || 0);
-console.log("INTER_KEY exists?", !!process.env.INTER_KEY, "length:", process.env.INTER_KEY?.length || 0);
-
-if (!process.env.INTER_CLIENT_ID || !process.env.INTER_CLIENT_SECRET) {
-  throw new Error("Variáveis INTER_CLIENT_ID e/ou INTER_CLIENT_SECRET ausentes.");
+function criarAgent() {
+    const cert = parsePemEnv(process.env.INTER_CERT, "INTER_CERT");
+    const key  = parsePemEnv(process.env.INTER_KEY,  "INTER_KEY");
+    if (!cert || !key) throw new Error("INTER_CERT ou INTER_KEY ausente/invalido.");
+    return new https.Agent({ cert, key, rejectUnauthorized: true });
 }
-
-if (!cert || !key) {
-  throw new Error("Variáveis INTER_CERT e/ou INTER_KEY ausentes ou inválidas.");
-}
-
-const agent = new https.Agent({
-  cert,
-  key,
-  rejectUnauthorized: true,
-});
 
 async function gerarToken() {
-  try {
+    const clientId     = process.env.INTER_CLIENT_ID;
+    const clientSecret = process.env.INTER_CLIENT_SECRET;
+    if (!clientId || !clientSecret) throw new Error("INTER_CLIENT_ID ou INTER_CLIENT_SECRET ausente.");
+    const agent = criarAgent();
     const body =
-      `client_id=${encodeURIComponent(process.env.INTER_CLIENT_ID)}` +
-      `&client_secret=${encodeURIComponent(process.env.INTER_CLIENT_SECRET)}` +
-      `&scope=extrato.read` +
-      `&grant_type=client_credentials`;
-
+          "client_id=" + encodeURIComponent(clientId) +
+          "&client_secret=" + encodeURIComponent(clientSecret) +
+          "&scope=extrato.read%20saldo.read" +
+          "&grant_type=client_credentials";
     const response = await axios.post(
-      "https://cdpj.partners.bancointer.com.br/oauth/v2/token",
-      body,
-      {
-        httpsAgent: agent,
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        timeout: 30000,
-      }
-    );
-
+          "https://cdpj.partners.bancointer.com.br/oauth/v2/token",
+          body,
+      { httpsAgent: agent, headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 30000 }
+        );
+    console.log("[INFO] Token gerado.");
     return response.data.access_token;
-  } catch (error) {
-    console.error("ERRO AO GERAR TOKEN:");
-    console.error("message:", error.message);
-    console.error("status:", error.response?.status);
-    console.error("data:", error.response?.data);
-    throw error;
-  }
 }
 
 app.get("/health", (req, res) => {
-  res.json({
-    ok: true,
-    service: "inter-backend",
-    certLoaded: !!cert,
-    keyLoaded: !!key,
-    clientIdLoaded: !!process.env.INTER_CLIENT_ID,
-    clientSecretLoaded: !!process.env.INTER_CLIENT_SECRET,
-  });
+    const vars = {
+          INTER_CLIENT_ID:     !!process.env.INTER_CLIENT_ID,
+          INTER_CLIENT_SECRET: !!process.env.INTER_CLIENT_SECRET,
+          INTER_CERT:          !!process.env.INTER_CERT,
+          INTER_KEY:           !!process.env.INTER_KEY,
+    };
+    const allOk = Object.values(vars).every(Boolean);
+    console.log("[HEALTH]", vars);
+    res.status(allOk ? 200 : 500).json({ status: allOk ? "ok" : "missing_vars", vars });
 });
 
 app.get("/saldo", async (req, res) => {
-  try {
-    const token = await gerarToken();
-
-    const response = await axios.get(
-      "https://cdpj.partners.bancointer.com.br/banking/v2/saldo",
-      {
-        httpsAgent: agent,
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        timeout: 30000,
-      }
-    );
-
-    res.json(response.data);
-  } catch (error) {
-    console.error("ERRO NA ROTA /saldo:");
-    console.error("message:", error.message);
-    console.error("status:", error.response?.status);
-    console.error("data:", error.response?.data);
-
-    res.status(error.response?.status || 500).json({
-      error: true,
-      route: "/saldo",
-      message: error.message,
-      status: error.response?.status || 500,
-      details: error.response?.data || null,
-    });
-  }
+    try {
+          const token = await gerarToken();
+          const agent = criarAgent();
+          const response = await axios.get(
+                  "https://cdpj.partners.bancointer.com.br/banking/v2/saldo",
+            { httpsAgent: agent, headers: { Authorization: "Bearer " + token }, timeout: 30000 }
+                );
+          res.json(response.data);
+    } catch (error) {
+          const status = error.response?.status ?? 500;
+          const data   = error.response?.data   ?? null;
+          console.error("[ERROR /saldo]", { status, message: error.message, data });
+          res.status(status).json({ error: error.message, detail: data });
+    }
 });
 
 app.get("/extrato", async (req, res) => {
-  try {
-    const token = await gerarToken();
-
-    const hoje = new Date();
-    const seteDiasAtras = new Date();
-    seteDiasAtras.setDate(hoje.getDate() - 7);
-
-    const dataInicio = seteDiasAtras.toISOString().split("T")[0];
-    const dataFim = hoje.toISOString().split("T")[0];
-
-    const response = await axios.get(
-      `https://cdpj.partners.bancointer.com.br/banking/v2/extrato?dataInicio=${dataInicio}&dataFim=${dataFim}`,
-      {
-        httpsAgent: agent,
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        timeout: 30000,
-      }
-    );
-
-    res.json(response.data);
-  } catch (error) {
-    console.error("ERRO NA ROTA /extrato:");
-    console.error("message:", error.message);
-    console.error("status:", error.response?.status);
-    console.error("data:", error.response?.data);
-
-    res.status(error.response?.status || 500).json({
-      error: true,
-      route: "/extrato",
-      message: error.message,
-      status: error.response?.status || 500,
-      details: error.response?.data || null,
-    });
-  }
+    try {
+          const token = await gerarToken();
+          const agent = criarAgent();
+          const hoje = new Date();
+          const fim  = hoje.toISOString().split("T")[0];
+          const ini  = new Date(hoje.setDate(hoje.getDate() - 30)).toISOString().split("T")[0];
+          const response = await axios.get(
+                  "https://cdpj.partners.bancointer.com.br/banking/v2/extrato",
+            { httpsAgent: agent, headers: { Authorization: "Bearer " + token }, params: { dataInicio: ini, dataFim: fim }, timeout: 30000 }
+                );
+          res.json(response.data);
+    } catch (error) {
+          const status = error.response?.status ?? 500;
+          const data   = error.response?.data   ?? null;
+          console.error("[ERROR /extrato]", { status, message: error.message, data });
+          res.status(status).json({ error: error.message, detail: data });
+    }
 });
 
 app.get("/sync", async (req, res) => {
-  try {
-    const token = await gerarToken();
-
-    const hoje = new Date();
-    const seteDiasAtras = new Date();
-    seteDiasAtras.setDate(hoje.getDate() - 7);
-
-    const dataInicio = seteDiasAtras.toISOString().split("T")[0];
-    const dataFim = hoje.toISOString().split("T")[0];
-
-    const response = await axios.get(
-      `https://cdpj.partners.bancointer.com.br/banking/v2/extrato?dataInicio=${dataInicio}&dataFim=${dataFim}`,
-      {
-        httpsAgent: agent,
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        timeout: 30000,
-      }
-    );
-
-    const transacoes = response.data.transacoes || [];
-    let inseridas = 0;
-
-    for (const t of transacoes) {
-      const hash = crypto
-        .createHash("sha256")
-        .update(`${t.dataEntrada}|${t.valor}|${t.descricao}`)
-        .digest("hex");
-
-      db.run(
-        `INSERT OR IGNORE INTO transacoes
-         (data, tipo_operacao, tipo_transacao, valor, descricao, hash)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          t.dataEntrada,
-          t.tipoOperacao,
-          t.tipoTransacao,
-          parseFloat(t.valor),
-          t.descricao,
-          hash,
-        ],
-        function (err) {
-          if (!err && this.changes > 0) inseridas++;
-        }
-      );
+    try {
+          const token = await gerarToken();
+          const agent = criarAgent();
+          const hoje = new Date();
+          const fim  = hoje.toISOString().split("T")[0];
+          const ini  = new Date(hoje.setDate(hoje.getDate() - 30)).toISOString().split("T")[0];
+          const response = await axios.get(
+                  "https://cdpj.partners.bancointer.com.br/banking/v2/extrato",
+            { httpsAgent: agent, headers: { Authorization: "Bearer " + token }, params: { dataInicio: ini, dataFim: fim }, timeout: 30000 }
+                );
+          const transacoes = response.data.transacoes || [];
+          let inseridas = 0;
+          for (const t of transacoes) {
+                  const hash = crypto.createHash("sha256").update(t.dataEntrada + "|" + t.valor + "|" + t.descricao).digest("hex");
+                  db.run(
+                            "INSERT OR IGNORE INTO transacoes (data, tipo_operacao, tipo_transacao, valor, descricao, hash) VALUES (?, ?, ?, ?, ?, ?)",
+                            [t.dataEntrada, t.tipoOperacao, t.tipoTransacao, parseFloat(t.valor), t.descricao, hash],
+                            function(err) { if (!err && this.changes > 0) inseridas++; }
+                          );
+          }
+          res.json({ message: "Sync concluido", total: transacoes.length, inseridas });
+    } catch (error) {
+          const status = error.response?.status ?? 500;
+          const data   = error.response?.data   ?? null;
+          console.error("[ERROR /sync]", { status, message: error.message, data });
+          res.status(status).json({ error: error.message, detail: data });
     }
-
-    res.json({
-      message: "Sync concluído",
-      total: transacoes.length,
-      inseridas,
-    });
-  } catch (error) {
-    console.error("ERRO NA ROTA /sync:");
-    console.error("message:", error.message);
-    console.error("status:", error.response?.status);
-    console.error("data:", error.response?.data);
-
-    res.status(error.response?.status || 500).json({
-      error: true,
-      route: "/sync",
-      message: error.message,
-      status: error.response?.status || 500,
-      details: error.response?.data || null,
-    });
-  }
 });
 
 app.get("/transacoes", (req, res) => {
-  db.all("SELECT * FROM transacoes ORDER BY data DESC", [], (err, rows) => {
-    if (err) {
-      console.error("ERRO NA ROTA /transacoes:", err.message);
-      return res.status(500).json({ error: true, message: err.message });
-    }
-    res.json(rows);
-  });
+    db.all("SELECT * FROM transacoes ORDER BY data DESC", [], (err, rows) => {
+          if (err) { console.error("[ERROR /transacoes]", err.message); return res.status(500).json({ error: err.message }); }
+          res.json(rows);
+    });
 });
 
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+    console.log("[INFO] Servidor rodando na porta " + PORT);
+    console.log("[INFO] Variaveis:", {
+          INTER_CLIENT_ID:     !!process.env.INTER_CLIENT_ID,
+          INTER_CLIENT_SECRET: !!process.env.INTER_CLIENT_SECRET,
+          INTER_CERT:          !!process.env.INTER_CERT,
+          INTER_KEY:           !!process.env.INTER_KEY,
+    });
 });
