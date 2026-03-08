@@ -27,23 +27,17 @@ function parsePemEnv(value, label) {
   return lines.join("\n") + "\n";
 }
 
-app.get("/debug-cert", function(req, res) {
-  const cert = parsePemEnv(process.env.INTER_CERT, "INTER_CERT");
-  const key = parsePemEnv(process.env.INTER_KEY, "INTER_KEY");
-  res.json({ cert_ok: !!cert, key_ok: !!key });
-});
-
 function criarAgent() {
   const cert = parsePemEnv(process.env.INTER_CERT, "INTER_CERT");
-  const key = parsePemEnv(process.env.INTER_KEY, "INTER_KEY");
+  const key  = parsePemEnv(process.env.INTER_KEY,  "INTER_KEY");
   if (!cert || !key) throw new Error("INTER_CERT ou INTER_KEY ausente.");
-  return new https.Agent({ cert, key, rejectUnauthorized: true });
+  return new https.Agent({ cert: cert, key: key, rejectUnauthorized: true });
 }
 
 async function gerarToken() {
   const clientId = process.env.INTER_CLIENT_ID;
   const clientSecret = process.env.INTER_CLIENT_SECRET;
-  if (!clientId || !clientSecret) throw new Error("INTER_CLIENT_ID ou INTER_CLIENT_SECRET ausente.");
+  if (!clientId || !clientSecret) throw new Error("Credenciais Inter ausentes.");
   const agent = criarAgent();
   const body = "client_id=" + encodeURIComponent(clientId) + "&client_secret=" + encodeURIComponent(clientSecret) + "&scope=extrato.read%20saldo.read&grant_type=client_credentials";
   const r = await axios.post("https://cdpj.partners.bancointer.com.br/oauth/v2/token", body,
@@ -52,44 +46,52 @@ async function gerarToken() {
 }
 
 app.get("/health", function(req, res) {
-  const vars = { INTER_CLIENT_ID: !!process.env.INTER_CLIENT_ID, INTER_CLIENT_SECRET: !!process.env.INTER_CLIENT_SECRET, INTER_CERT: !!process.env.INTER_CERT, INTER_KEY: !!process.env.INTER_KEY };
-  res.status(Object.values(vars).every(Boolean) ? 200 : 500).json({ status: Object.values(vars).every(Boolean) ? "ok" : "missing_vars", vars });
+  const v = { INTER_CLIENT_ID: !!process.env.INTER_CLIENT_ID, INTER_CLIENT_SECRET: !!process.env.INTER_CLIENT_SECRET, INTER_CERT: !!process.env.INTER_CERT, INTER_KEY: !!process.env.INTER_KEY };
+  res.status(Object.values(v).every(Boolean) ? 200 : 500).json({ status: Object.values(v).every(Boolean) ? "ok" : "missing_vars", vars: v });
+});
+
+app.get("/debug-cert", function(req, res) {
+  res.json({ cert_ok: !!parsePemEnv(process.env.INTER_CERT, "x"), key_ok: !!parsePemEnv(process.env.INTER_KEY, "x") });
 });
 
 app.get("/saldo", async function(req, res) {
   try {
-    const token = await gerarToken(); const agent = criarAgent();
-    const r = await axios.get("https://cdpj.partners.bancointer.com.br/banking/v2/saldo", { httpsAgent: agent, headers: { Authorization: "Bearer " + token }, timeout: 30000 });
+    const token = await gerarToken();
+    const r = await axios.get("https://cdpj.partners.bancointer.com.br/banking/v2/saldo",
+      { httpsAgent: criarAgent(), headers: { Authorization: "Bearer " + token }, timeout: 30000 });
     res.json(r.data);
   } catch (e) { res.status(e.response ? e.response.status : 500).json({ error: e.message }); }
 });
 
 app.get("/extrato", async function(req, res) {
   try {
-    const token = await gerarToken(); const agent = criarAgent();
-    const hoje = new Date(); const fim = hoje.toISOString().split("T")[0];
+    const token = await gerarToken();
+    const hoje = new Date();
+    const fim = hoje.toISOString().split("T")[0];
     const ini = new Date(hoje.setDate(hoje.getDate() - 30)).toISOString().split("T")[0];
     const r = await axios.get("https://cdpj.partners.bancointer.com.br/banking/v2/extrato",
-      { httpsAgent: agent, headers: { Authorization: "Bearer " + token }, params: { dataInicio: ini, dataFim: fim }, timeout: 30000 });
+      { httpsAgent: criarAgent(), headers: { Authorization: "Bearer " + token }, params: { dataInicio: ini, dataFim: fim }, timeout: 30000 });
     res.json(r.data);
   } catch (e) { res.status(e.response ? e.response.status : 500).json({ error: e.message }); }
 });
 
 app.get("/sync", async function(req, res) {
   try {
-    const token = await gerarToken(); const agent = criarAgent();
-    const hoje = new Date(); const fim = hoje.toISOString().split("T")[0];
+    const token = await gerarToken();
+    const hoje = new Date();
+    const fim = hoje.toISOString().split("T")[0];
     const ini = new Date(hoje.setDate(hoje.getDate() - 30)).toISOString().split("T")[0];
     const r = await axios.get("https://cdpj.partners.bancointer.com.br/banking/v2/extrato",
-      { httpsAgent: agent, headers: { Authorization: "Bearer " + token }, params: { dataInicio: ini, dataFim: fim }, timeout: 30000 });
-    const transacoes = r.data.transacoes || []; let inseridas = 0;
-    for (const t of transacoes) {
+      { httpsAgent: criarAgent(), headers: { Authorization: "Bearer " + token }, params: { dataInicio: ini, dataFim: fim }, timeout: 30000 });
+    const tx = r.data.transacoes || [];
+    let inseridas = 0;
+    for (const t of tx) {
       const hash = crypto.createHash("sha256").update(t.dataEntrada + "|" + t.valor + "|" + t.descricao).digest("hex");
-      db.run("INSERT OR IGNORE INTO transacoes (data, tipo_operacao, tipo_transacao, valor, descricao, hash) VALUES (?, ?, ?, ?, ?, ?)",
+      db.run("INSERT OR IGNORE INTO transacoes (data,tipo_operacao,tipo_transacao,valor,descricao,hash) VALUES (?,?,?,?,?,?)",
         [t.dataEntrada, t.tipoOperacao, t.tipoTransacao, parseFloat(t.valor), t.descricao, hash],
         function(err) { if (!err && this.changes > 0) inseridas++; });
     }
-    res.json({ message: "Sync concluido", total: transacoes.length, inseridas });
+    res.json({ message: "Sync concluido", total: tx.length, inseridas });
   } catch (e) { res.status(e.response ? e.response.status : 500).json({ error: e.message }); }
 });
 
@@ -100,141 +102,151 @@ app.get("/transacoes", function(req, res) {
   });
 });
 
-const CLINICORP_BASE = "https://api.clinicorp.com/rest/v1";
+// CLINICORP
+const BASE = "https://api.clinicorp.com/rest/v1";
 
-function clinicorpHeaders() {
-  const user = process.env.CLINICORP_USER; const token = process.env.CLINICORP_TOKEN;
-  if (!user || !token) throw new Error("CLINICORP_USER ou CLINICORP_TOKEN ausente.");
-  return { Authorization: "Basic " + Buffer.from(user + ":" + token).toString("base64"), "Content-Type": "application/json" };
+function cHeaders() {
+  const u = process.env.CLINICORP_USER, t = process.env.CLINICORP_TOKEN;
+  if (!u || !t) throw new Error("CLINICORP_USER/TOKEN ausente.");
+  return { Authorization: "Basic " + Buffer.from(u + ":" + t).toString("base64"), "Content-Type": "application/json" };
 }
-function subscriberId() {
+function sid() {
   const id = process.env.CLINICORP_SUBSCRIBER;
   if (!id) throw new Error("CLINICORP_SUBSCRIBER ausente.");
   return id;
 }
-function businessId() {
+function bid() {
   const id = process.env.CLINICORP_BUSINESS_ID;
-  if (!id) throw new Error("CLINICORP_BUSINESS_ID nao configurado — obrigatorio para agendamentos.");
+  if (!id) throw new Error("CLINICORP_BUSINESS_ID nao configurado.");
   return id;
 }
+function toArr(d) { return Array.isArray(d) ? d : (d && typeof d === "object" && !d.Error ? [d] : []); }
 
-async function clinicorpGet(path, params) {
+async function cGet(path, params) {
   const qs = new URLSearchParams();
-  for (const [k, v] of Object.entries(params || {})) {
-    if (v !== undefined && v !== null && v !== "") qs.append(k, v);
-  }
-  const url = CLINICORP_BASE + path + (qs.toString() ? "?" + qs.toString() : "");
-  console.log("[CLINICORP] GET " + url);
-  const resp = await axios.get(url, { headers: clinicorpHeaders(), timeout: 30000 });
-  return resp.data;
+  for (const [k, v] of Object.entries(params || {})) if (v !== undefined && v !== null && v !== "") qs.append(k, v);
+  const url = BASE + path + (qs.toString() ? "?" + qs.toString() : "");
+  console.log("[CLINICORP] GET", url);
+  return (await axios.get(url, { headers: cHeaders(), timeout: 30000 })).data;
 }
 
 app.get("/clinicorp/health", function(req, res) {
-  const vars = { CLINICORP_USER: !!process.env.CLINICORP_USER, CLINICORP_TOKEN: !!process.env.CLINICORP_TOKEN, CLINICORP_SUBSCRIBER: !!process.env.CLINICORP_SUBSCRIBER, CLINICORP_BUSINESS_ID: !!process.env.CLINICORP_BUSINESS_ID };
-  res.status(Object.values(vars).every(Boolean) ? 200 : 500).json({ status: Object.values(vars).every(Boolean) ? "ok" : "missing_vars", vars });
+  const v = { CLINICORP_USER: !!process.env.CLINICORP_USER, CLINICORP_TOKEN: !!process.env.CLINICORP_TOKEN, CLINICORP_SUBSCRIBER: !!process.env.CLINICORP_SUBSCRIBER, CLINICORP_BUSINESS_ID: !!process.env.CLINICORP_BUSINESS_ID };
+  res.status(Object.values(v).every(Boolean) ? 200 : 500).json({ status: Object.values(v).every(Boolean) ? "ok" : "missing_vars", vars: v });
 });
 
+// PACIENTES - Name (N maiusculo), subscriber_id obrigatorio
 app.get("/clinicorp/pacientes", async function(req, res) {
   try {
     const { name, cpf, phone, email, patientId } = req.query;
-    const params = { subscriber_id: subscriberId() };
-    if (patientId) params.PatientId = patientId;
-    if (name) params.Name = name;
-    if (cpf) params.OtherDocumentId = cpf;
-    if (phone) params.Phone = phone;
-    if (email) params.Email = email;
-    const data = await clinicorpGet("/patient/get", params);
-    res.json(data);
-  } catch (err) {
-    console.error("[PACIENTES] Erro:", err.message, err.response ? JSON.stringify(err.response.data) : "");
-    res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null });
-  }
+    if (!name && !cpf && !phone && !email && !patientId)
+      return res.status(400).json({ error: "Informe: name, cpf, phone, email ou patientId." });
+    const data = await cGet("/patient/get", {
+      subscriber_id:   sid(),
+      PatientId:       patientId  || undefined,
+      Name:            name       || undefined,
+      OtherDocumentId: cpf        || undefined,
+      Phone:           phone      || undefined,
+      Email:           email      || undefined,
+    });
+    res.json(toArr(data));
+  } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null }); }
 });
 
 app.get("/clinicorp/pacientes/:patientId/agendamentos", async function(req, res) {
-  try {
-    const data = await clinicorpGet("/patient/list_appointments", { subscriber_id: subscriberId(), PatientId: req.params.patientId });
-    res.json(data);
-  } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
+  try { res.json(toArr(await cGet("/patient/list_appointments", { PatientId: req.params.patientId }))); }
+  catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
 });
 
 app.get("/clinicorp/pacientes/:patientId/orcamentos", async function(req, res) {
-  try {
-    const data = await clinicorpGet("/patient/list_estimates", { subscriber_id: subscriberId(), PatientId: req.params.patientId });
-    res.json(data);
-  } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
+  try { res.json(toArr(await cGet("/patient/list_estimates", { subscriber_id: sid(), PatientId: req.params.patientId }))); }
+  catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
 });
 
+// PAGAMENTOS
 app.get("/clinicorp/pagamentos", async function(req, res) {
   try {
     const { from, to, dateType } = req.query;
-    if (!from || !to) return res.status(400).json({ error: "Parametros 'from' e 'to' obrigatorios." });
-    const data = await clinicorpGet("/payment/list", {
-      subscriber_id: subscriberId(), from, to,
-      date_type: dateType || undefined, include_total_amount: "X",
-    });
+    if (!from || !to) return res.status(400).json({ error: "from e to obrigatorios." });
+    const data = await cGet("/payment/list", { subscriber_id: sid(), from, to, date_type: dateType || undefined, include_total_amount: "X" });
     res.json(data);
-  } catch (err) {
-    console.error("[PAGAMENTOS] Erro:", err.message, err.response ? JSON.stringify(err.response.data) : "");
-    res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null });
-  }
+  } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null }); }
 });
 
+// AGENDAMENTOS - businessId * obrigatorio na API
 app.get("/clinicorp/agendamentos", async function(req, res) {
   try {
     const { from, to, patientId, includeCanceled } = req.query;
-    if (!from || !to) return res.status(400).json({ error: "Parametros 'from' e 'to' obrigatorios." });
-    const bid = businessId();
-    const params = { subscriber_id: subscriberId(), from, to, businessId: bid };
-    if (patientId) params.patientId = patientId;
-    if (includeCanceled === "true") params.includeCanceled = "true";
-    const data = await clinicorpGet("/appointment/list", params);
-    res.json(data);
-  } catch (err) {
-    console.error("[AGENDAMENTOS] Erro:", err.message, err.response ? JSON.stringify(err.response.data) : "");
-    res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null });
-  }
+    if (!from || !to) return res.status(400).json({ error: "from e to obrigatorios." });
+    const data = await cGet("/appointment/list", {
+      subscriber_id:   sid(),
+      from,
+      to,
+      businessId:      bid(),
+      patientId:       patientId || undefined,
+      includeCanceled: includeCanceled === "true" ? "true" : undefined,
+    });
+    res.json(toArr(data));
+  } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null }); }
 });
 
+// PROCEDIMENTOS
 app.get("/clinicorp/procedimentos", async function(req, res) {
-  try {
-    const data = await clinicorpGet("/procedures/list", { subscriber_id: subscriberId() });
-    res.json(data);
-  } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
+  try { res.json(await cGet("/procedures/list", {})); }
+  catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
 });
 
+// PROFISSIONAIS
+app.get("/clinicorp/profissionais", async function(req, res) {
+  try { res.json(await cGet("/professional/list_all_professionals", { subscriber_id: sid() })); }
+  catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
+});
+
+// RECEITAS POR ESPECIALIDADE (mantido)
 app.get("/clinicorp/receitas-especialidade", async function(req, res) {
   try {
     const { from, to } = req.query;
-    if (!from || !to) return res.status(400).json({ error: "Parametros 'from' e 'to' obrigatorios." });
-    const data = await clinicorpGet("/sales/expertise_revenue", { subscriber_id: subscriberId(), from, to, businessId: businessId() });
-    res.json(data);
+    if (!from || !to) return res.status(400).json({ error: "from e to obrigatorios." });
+    res.json(await cGet("/sales/expertise_revenue", { subscriber_id: sid(), from, to, businessId: process.env.CLINICORP_BUSINESS_ID || undefined }));
   } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
 });
 
-app.get("/clinicorp/resumo", async function(req, res) {
-  try {
-    const { from, to } = req.query;
-    if (!from || !to) return res.status(400).json({ error: "Parametros 'from' e 'to' obrigatorios." });
-    const data = await clinicorpGet("/financial/list_summary", { subscriber_id: subscriberId(), from, to, business_id: businessId() });
-    res.json(data);
-  } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
-});
-
+// RECEITAS POR PROFISSIONAL - agendamentos agrupados por CreatedUserName
 app.get("/clinicorp/receitas-profissional", async function(req, res) {
   try {
     const { from, to } = req.query;
-    if (!from || !to) return res.status(400).json({ error: "Parametros 'from' e 'to' obrigatorios." });
-    const data = await clinicorpGet("/appointment/list", { subscriber_id: subscriberId(), from, to, businessId: businessId() });
-    res.json(data);
-  } catch (err) {
-    console.error("[RECEITAS-PROF] Erro:", err.message, err.response ? JSON.stringify(err.response.data) : "");
-    res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null });
-  }
+    if (!from || !to) return res.status(400).json({ error: "from e to obrigatorios." });
+    const lista = toArr(await cGet("/appointment/list", { subscriber_id: sid(), from, to, businessId: bid() }));
+    const mapa = {};
+    for (const a of lista) {
+      const prof = a.CreatedUserName || a.ProfessionalName || "Sem profissional";
+      if (!mapa[prof]) mapa[prof] = { profissional: prof, totalAtendimentos: 0, atendimentos: [] };
+      mapa[prof].atendimentos.push({
+        paciente:    a.PatientName || "",
+        data:        a.date || "",
+        horaInicio:  a.fromTime || "",
+        horaFim:     a.toTime || "",
+        profissional: prof,
+        email:       a.Email || "",
+        sessao:      a.Session || 0,
+      });
+      mapa[prof].totalAtendimentos++;
+    }
+    res.json({ periodo: { from, to }, porProfissional: Object.values(mapa), totalAtendimentos: lista.length });
+  } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null }); }
+});
+
+// RESUMO FINANCEIRO
+app.get("/clinicorp/resumo", async function(req, res) {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).json({ error: "from e to obrigatorios." });
+    res.json(await cGet("/financial/list_summary", { subscriber_id: sid(), from, to, business_id: process.env.CLINICORP_BUSINESS_ID || undefined }));
+  } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, function() {
-  console.log("[INFO] Servidor na porta " + PORT);
-  console.log("[INFO] Clinicorp business_id:", process.env.CLINICORP_BUSINESS_ID || "NAO CONFIGURADO");
+  console.log("[INFO] Porta", PORT);
+  console.log("[INFO] CLINICORP_BUSINESS_ID:", process.env.CLINICORP_BUSINESS_ID ? "OK" : "NAO CONFIGURADO - agendamentos vao falhar");
 });
