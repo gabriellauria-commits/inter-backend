@@ -248,6 +248,33 @@ app.get("/clinicorp/resumo", async function(req, res) {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// DEBUG - retorna resposta RAW da Clinicorp para diagnostico
+app.get("/debug-raw", async function(req, res) {
+  try {
+    const { endpoint, from, to, name, businessId: bIdParam } = req.query;
+    const u = process.env.CLINICORP_USER, t = process.env.CLINICORP_TOKEN;
+    const sid = process.env.CLINICORP_SUBSCRIBER;
+    const bid = process.env.CLINICORP_BUSINESS_ID;
+    const headers = { Authorization: "Basic " + Buffer.from(u + ":" + t).toString("base64"), "Content-Type": "application/json" };
+    const BASE2 = "https://api.clinicorp.com/rest/v1";
+    let path = endpoint || "/appointment/list";
+    const qs = new URLSearchParams();
+    qs.append("subscriber_id", sid);
+    if (from) qs.append("from", from);
+    if (to) qs.append("to", to);
+    if (name) qs.append("Name", name);
+    if (bid && (path.includes("appointment") || bIdParam)) qs.append("businessId", bid);
+    const fullUrl = BASE2 + path + "?" + qs.toString();
+    console.log("[DEBUG-RAW] Chamando:", fullUrl);
+    const r = await axios.get(fullUrl, { headers, timeout: 30000 });
+    res.json({ url: fullUrl, status: r.status, data: r.data, businessId_usado: bid, subscriber_usado: sid });
+  } catch(err) {
+    const errData = err.response ? { status: err.response.status, data: err.response.data } : { msg: err.message };
+    res.status(500).json({ error: err.message, clinicorpResponse: errData });
+  }
+});
+
 app.listen(PORT, function() {
   console.log("[INFO] Porta", PORT);
   console.log("[INFO] CLINICORP_BUSINESS_ID:", process.env.CLINICORP_BUSINESS_ID || "NAO CONFIGURADO");
