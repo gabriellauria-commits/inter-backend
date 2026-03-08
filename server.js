@@ -102,7 +102,6 @@ app.get("/transacoes", function(req, res) {
   });
 });
 
-// CLINICORP
 const BASE = "https://api.clinicorp.com/rest/v1";
 
 function cHeaders() {
@@ -120,7 +119,7 @@ function bid() {
   if (!id) throw new Error("CLINICORP_BUSINESS_ID nao configurado.");
   return id;
 }
-function toArr(d) { return Array.isArray(d) ? d : (d && typeof d === "object" && !d.Error ? [d] : []); }
+function toArr(d) { return Array.isArray(d) ? d : (d && typeof d === "object" && !d.Error && Object.keys(d).length > 0 ? [d] : []); }
 
 async function cGet(path, params) {
   const qs = new URLSearchParams();
@@ -135,7 +134,19 @@ app.get("/clinicorp/health", function(req, res) {
   res.status(Object.values(v).every(Boolean) ? 200 : 500).json({ status: Object.values(v).every(Boolean) ? "ok" : "missing_vars", vars: v });
 });
 
-// PACIENTES - Name (N maiusculo), subscriber_id obrigatorio
+// DIAGNOSTICO COMPLETO
+app.get("/clinicorp/diagnostico", async function(req, res) {
+  try {
+    const results = {};
+    try { results.clinicas = await cGet("/group/list_subscribers_clinics", { subscriber_id: sid() }); } catch(e) { results.clinicas_erro = e.message; }
+    try { results.business = await cGet("/business/list", { subscriber_id: sid() }); } catch(e) { results.business_erro = e.message; }
+    try { results.agendamentos_raw = await cGet("/appointment/list", { subscriber_id: sid(), from: "2026-03-01", to: "2026-03-31", businessId: bid() }); } catch(e) { results.agendamentos_erro = e.message + " | detail: " + JSON.stringify(e.response ? e.response.data : null); }
+    try { results.paciente_raw = await cGet("/patient/get", { subscriber_id: sid(), Name: "Danielle" }); } catch(e) { results.paciente_erro = e.message; }
+    results.env = { subscriber: process.env.CLINICORP_SUBSCRIBER, business_id: process.env.CLINICORP_BUSINESS_ID };
+    res.json(results);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get("/clinicorp/pacientes", async function(req, res) {
   try {
     const { name, cpf, phone, email, patientId } = req.query;
@@ -149,6 +160,7 @@ app.get("/clinicorp/pacientes", async function(req, res) {
       Phone:           phone      || undefined,
       Email:           email      || undefined,
     });
+    console.log("[PACIENTE RAW]", JSON.stringify(data));
     res.json(toArr(data));
   } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null }); }
 });
@@ -163,7 +175,6 @@ app.get("/clinicorp/pacientes/:patientId/orcamentos", async function(req, res) {
   catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
 });
 
-// PAGAMENTOS
 app.get("/clinicorp/pagamentos", async function(req, res) {
   try {
     const { from, to, dateType } = req.query;
@@ -173,36 +184,37 @@ app.get("/clinicorp/pagamentos", async function(req, res) {
   } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null }); }
 });
 
-// AGENDAMENTOS - businessId * obrigatorio na API
 app.get("/clinicorp/agendamentos", async function(req, res) {
   try {
     const { from, to, patientId, includeCanceled } = req.query;
     if (!from || !to) return res.status(400).json({ error: "from e to obrigatorios." });
+    const bId = bid();
+    console.log("[AGEND] businessId usado:", bId, "| from:", from, "| to:", to);
     const data = await cGet("/appointment/list", {
       subscriber_id:   sid(),
-      from,
-      to,
-      businessId:      bid(),
+      from, to,
+      businessId:      bId,
       patientId:       patientId || undefined,
       includeCanceled: includeCanceled === "true" ? "true" : undefined,
     });
+    console.log("[AGEND RAW]", JSON.stringify(data).substring(0, 300));
     res.json(toArr(data));
-  } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null }); }
+  } catch (err) {
+    console.error("[AGEND ERRO]", err.message, err.response ? err.response.data : "");
+    res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null });
+  }
 });
 
-// PROCEDIMENTOS
 app.get("/clinicorp/procedimentos", async function(req, res) {
   try { res.json(await cGet("/procedures/list", {})); }
   catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
 });
 
-// PROFISSIONAIS
 app.get("/clinicorp/profissionais", async function(req, res) {
   try { res.json(await cGet("/professional/list_all_professionals", { subscriber_id: sid() })); }
   catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
 });
 
-// RECEITAS POR ESPECIALIDADE (mantido)
 app.get("/clinicorp/receitas-especialidade", async function(req, res) {
   try {
     const { from, to } = req.query;
@@ -211,7 +223,6 @@ app.get("/clinicorp/receitas-especialidade", async function(req, res) {
   } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message }); }
 });
 
-// RECEITAS POR PROFISSIONAL - agendamentos agrupados por CreatedUserName
 app.get("/clinicorp/receitas-profissional", async function(req, res) {
   try {
     const { from, to } = req.query;
@@ -221,22 +232,13 @@ app.get("/clinicorp/receitas-profissional", async function(req, res) {
     for (const a of lista) {
       const prof = a.CreatedUserName || a.ProfessionalName || "Sem profissional";
       if (!mapa[prof]) mapa[prof] = { profissional: prof, totalAtendimentos: 0, atendimentos: [] };
-      mapa[prof].atendimentos.push({
-        paciente:    a.PatientName || "",
-        data:        a.date || "",
-        horaInicio:  a.fromTime || "",
-        horaFim:     a.toTime || "",
-        profissional: prof,
-        email:       a.Email || "",
-        sessao:      a.Session || 0,
-      });
+      mapa[prof].atendimentos.push({ paciente: a.PatientName || "", data: a.date || "", horaInicio: a.fromTime || "", horaFim: a.toTime || "", profissional: prof, email: a.Email || "", sessao: a.Session || 0 });
       mapa[prof].totalAtendimentos++;
     }
     res.json({ periodo: { from, to }, porProfissional: Object.values(mapa), totalAtendimentos: lista.length });
   } catch (err) { res.status(err.response ? err.response.status : 500).json({ error: err.message, detail: err.response ? err.response.data : null }); }
 });
 
-// RESUMO FINANCEIRO
 app.get("/clinicorp/resumo", async function(req, res) {
   try {
     const { from, to } = req.query;
@@ -248,5 +250,6 @@ app.get("/clinicorp/resumo", async function(req, res) {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, function() {
   console.log("[INFO] Porta", PORT);
-  console.log("[INFO] CLINICORP_BUSINESS_ID:", process.env.CLINICORP_BUSINESS_ID ? "OK" : "NAO CONFIGURADO - agendamentos vao falhar");
+  console.log("[INFO] CLINICORP_BUSINESS_ID:", process.env.CLINICORP_BUSINESS_ID || "NAO CONFIGURADO");
+  console.log("[INFO] CLINICORP_SUBSCRIBER:", process.env.CLINICORP_SUBSCRIBER || "NAO CONFIGURADO");
 });
