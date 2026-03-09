@@ -1,15 +1,16 @@
 {
-  "name": "inter-backend",
-  "version": "1.0.0",
-  "description": "Backend integração Banco Inter",
-  "main": "server.js",
-  "type": "commonjs",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "axios": "^1.13.6",
-    "express": "^5.2.1",
-    "sqlite3": "^5.1.7"
-  }
+    "name": "inter-backend",
+    "version": "1.0.0",
+    "description": "Backend integração Banco Inter",
+    "main": "server.js",
+    "type": "commonjs",
+    "scripts": {
+          "start": "node server.js"
+    },
+    "dependencies": {
+          "axios": "^1.13.6",
+          "express": "^5.2.1",
+          "multer": "^1.4.5-lts.1",
+          "sqlite3": "^5.1.7"
+    }
 }
